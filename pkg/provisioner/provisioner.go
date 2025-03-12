@@ -26,6 +26,7 @@ import (
 	controller "sigs.k8s.io/sig-storage-lib-external-provisioner/v10/controller"
 
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -402,6 +403,7 @@ func (p *HybridProvisioner) createPVbyPOD(ctx context.Context, opts controller.P
 }
 
 func (p *HybridProvisioner) bondPVC(ctx context.Context, opts controller.ProvisionOptions, pvName string, storageClass *storagev1.StorageClass) error {
+	var lastSaveError error
 	patch, _ := json.Marshal(&corev1.PersistentVolumeClaim{ // nolint: errcheck,errchkjson
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
@@ -421,6 +423,25 @@ func (p *HybridProvisioner) bondPVC(ctx context.Context, opts controller.Provisi
 	}
 
 	if storageClass.ReclaimPolicy != nil && *storageClass.ReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
+		err := wait.ExponentialBackoff(p.backoff, func() (bool, error) {
+			klog.V(4).InfoS("Waiting for PV get spec.claimRef updated before restore persistentVolumeReclaimPolicy", "PV", pvName)
+			var err error
+			var pv *v1.PersistentVolume
+			if pv, err = p.client.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{}); err != nil {
+				klog.V(4).ErrorS(err, "Failed to get persistent volume", "PV", pvName)
+				lastSaveError = err
+				return false, nil
+			}
+			if pv.Spec.ClaimRef != nil {
+				return true, nil
+			}
+			klog.V(4).InfoS("Persistent volume spec.claimRef not yet updated", "PV", pvName)
+			return false, nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to wait update spec.claimRef field of PersistentVolume: %v", lastSaveError)
+		}
+
 		patch := []byte(`{"spec":{"persistentVolumeReclaimPolicy":"` + corev1.PersistentVolumeReclaimDelete + `"}}`)
 		if _, err := p.client.CoreV1().PersistentVolumes().Patch(ctx, pvName, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 			return fmt.Errorf("failed to patch PersistentVolume: %v", err)
