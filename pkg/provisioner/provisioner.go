@@ -488,6 +488,27 @@ func (p *HybridProvisioner) releasePV(ctx context.Context, pvc *corev1.Persisten
 		return nil, err
 	}
 
+	err = wait.ExponentialBackoff(p.backoff, func() (bool, error) {
+		klog.V(4).InfoS("Waiting for delete persistent volume claim completed", "PVC", klog.KObj(pvc))
+
+		if _, err := p.claimLister.PersistentVolumeClaims(pvc.Namespace).Get(pvc.Name); err != nil {
+			if errors.IsNotFound(err) {
+				klog.V(4).InfoS("Delete persistent volume claim completed", "PVC", klog.KObj(pvc))
+				return true, nil
+			}
+			klog.V(4).ErrorS(err, "Failed to get persistent volume claim deleting", "PVC", klog.KObj(pvc))
+			lastSaveError = err
+
+			return false, nil
+		}
+		klog.V(4).InfoS("Persistent volume claim still deleting", "PVC", klog.KObj(pvc))
+		return false, nil
+	})
+	if err != nil {
+		klog.ErrorS(lastSaveError, "Error waiting for persistentvolumeclaim deleted", "PVC", klog.KObj(pvc))
+		return nil, err
+	}
+
 	patch = []byte(`{"spec":{"claimRef":null}}`)
 	pv, err = p.client.CoreV1().PersistentVolumes().Patch(ctx, pvc.Spec.VolumeName, types.MergePatchType, patch, metav1.PatchOptions{})
 	if err != nil {
