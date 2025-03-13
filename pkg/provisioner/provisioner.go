@@ -421,8 +421,27 @@ func (p *HybridProvisioner) bondPVC(ctx context.Context, opts controller.Provisi
 	}
 
 	if storageClass.ReclaimPolicy != nil && *storageClass.ReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
-		patch := []byte(`{"spec":{"persistentVolumeReclaimPolicy":"` + corev1.PersistentVolumeReclaimDelete + `"}}`)
-		if _, err := p.client.CoreV1().PersistentVolumes().Patch(ctx, pvName, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		patch := fmt.Sprintf(
+			`{
+				"spec":
+				{
+					"persistentVolumeReclaimPolicy":"%s",
+					"claimRef":
+					{
+						"apiVersion":"v1",
+						"kind":"PersistentVolumeClaim",
+						"name":"%s",
+						"namespace":"%s",
+						"uid":"%s"
+					}
+				}
+			}`,
+			corev1.PersistentVolumeReclaimDelete,
+			opts.PVC.Name,
+			opts.PVC.Namespace,
+			opts.PVC.UID,
+		)
+		if _, err := p.client.CoreV1().PersistentVolumes().Patch(ctx, pvName, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
 			return fmt.Errorf("failed to patch PersistentVolume: %v", err)
 		}
 	}
